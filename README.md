@@ -8,17 +8,31 @@ Google Earth ProはXYZタイルURLを直接扱えないため、このツール�
 
 ## Windows PC上で実行する場合
 
+### Pythonをインストールせずに実行する（推奨）
+
+1. [GitHub Releases](https://github.com/yossh1/gsi-earth-bridge/releases)から`gsi-earth-overlay-windows-x64.zip`をダウンロードして展開します。
+2. 展開したフォルダー内の`gsi-earth-overlay.exe`を実行します。ブラウザーに操作画面が開きます。
+3. ズーム上限を選び、「KMLをダウンロード」を押します。
+4. Google Earth Proの「ファイル」→「開く」から、ダウンロードした`gsi_std_z*.kml`を選択します。
+5. 表示を終了するときは、起動した黒いウィンドウで`Ctrl+C`を押します。
+
+この実行ファイルはWindows x64向けです。初回起動時にMicrosoft Defender SmartScreenの警告が出る場合があります。GitHub Releasesからダウンロードしたことと公開元を確認し、不明な配布元のファイルは実行しないでください。
+
+### Pythonを使って実行する
+
 - Windows 10/11
 - Python 3.10以降（追加パッケージ不要）
 - インターネット接続
 - Google Earth Pro
 
-1. `start.bat` を実行します。ブラウザーに操作画面が開きます。
+1. `start.bat` を実行します。Pythonがインストールされていればブラウザーに操作画面が開きます。同じフォルダーに`gsi-earth-overlay.exe`がある場合はそちらを優先して起動します。
 2. ズーム上限を選び、「KMLをダウンロード」を押します。
 3. Google Earth Proの「ファイル」→「開く」から、ダウンロードした `gsi_std_z*.kml` を選択します。
 4. 表示を終了するときは、起動した黒いウィンドウで `Ctrl+C` を押します。
 
 中継サーバーを終了すると、KMLを開いたままでも地図タイルを取得できなくなります。地図を表示している間はサーバーを起動しておいてください。ポート8765が使用中の場合は `start.bat --port 8766` で別ポートを指定できます。
+
+Windows用実行ファイルは、`v`で始まるバージョンタグをGitHubにpushすると、GitHub ActionsがビルドしてReleasesにzipを公開します。
 
 ## Linuxサーバーで実行する場合
 
