@@ -19,6 +19,9 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_ZOOM = 18
 MIN_ZOOM = 5
+INITIAL_VIEW_LONGITUDE = 139.7671
+INITIAL_VIEW_LATITUDE = 35.6812
+INITIAL_VIEW_RANGE_METERS = 30000
 TILE_HOST = "https://cyberjapandata.gsi.go.jp"
 KML_NS = "http://www.opengis.net/kml/2.2"
 ET.register_namespace("", KML_NS)
@@ -82,6 +85,14 @@ def make_root_kml(base_url: str, max_zoom: int) -> bytes:
         "出典：国土地理院「地理院タイル（標準地図）」。"
         "表示に必要な地理院タイルをローカル中継サーバー経由で取得します。"
     )
+    look_at = ET.SubElement(document, tag("LookAt"))
+    ET.SubElement(look_at, tag("longitude")).text = str(INITIAL_VIEW_LONGITUDE)
+    ET.SubElement(look_at, tag("latitude")).text = str(INITIAL_VIEW_LATITUDE)
+    ET.SubElement(look_at, tag("altitude")).text = "0"
+    ET.SubElement(look_at, tag("heading")).text = "0"
+    ET.SubElement(look_at, tag("tilt")).text = "0"
+    ET.SubElement(look_at, tag("range")).text = str(INITIAL_VIEW_RANGE_METERS)
+    ET.SubElement(look_at, tag("altitudeMode")).text = "clampToGround"
     query = urllib.parse.urlencode({"max_zoom": max_zoom})
     bounds = (-180.0, -85.05112878, 180.0, 85.05112878)
     make_link(
