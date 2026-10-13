@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import math
+import os
 import re
 import threading
 import urllib.error
@@ -12,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 
 
-HOST = "127.0.0.1"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 MAX_ZOOM = 18
 MIN_ZOOM = 5
@@ -206,8 +208,7 @@ class RequestHandler(BaseHTTPRequestHandler):
                     400, f"max_zoom must be between {MIN_ZOOM} and {MAX_ZOOM}"
                 )
                 return
-            base_url = f"http://{self.server.server_address[0]}:{self.server.server_address[1]}"
-            body = make_root_kml(base_url, max_zoom)
+            body = make_root_kml(self.server.overlay_base_url, max_zoom)
             self.send_response(200)
             self.send_header("Content-Type", "application/vnd.google-earth.kml+xml")
             self.send_header("Content-Length", str(len(body)))
@@ -237,11 +238,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             if z > max_zoom:
                 self.send_error(404, "tile is beyond the selected zoom limit")
                 return
-            base_url = (
-                f"http://{self.server.server_address[0]}:"
-                f"{self.server.server_address[1]}"
-            )
-            body = make_tile_kml(base_url, z, x, y, max_zoom)
+            body = make_tile_kml(self.server.overlay_base_url, z, x, y, max_zoom)
             self.respond(200, body, "application/vnd.google-earth.kml+xml")
             return
 
@@ -297,16 +294,68 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="地理院地図をGoogle Earth Proへ中継")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("GSI_OVERLAY_HOST", DEFAULT_HOST),
+        help="待ち受けアドレス（環境変数: GSI_OVERLAY_HOST）",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.environ.get("GSI_OVERLAY_PORT", str(DEFAULT_PORT))),
+        help="待ち受けポート（環境変数: GSI_OVERLAY_PORT）",
+    )
+    parser.add_argument(
+        "--public-url",
+        default=os.environ.get("GSI_OVERLAY_PUBLIC_URL"),
+        help="KML内でWindowsクライアントに案内する公開URL（環境変数: GSI_OVERLAY_PUBLIC_URL）",
+    )
+    parser.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="起動時にブラウザーを開かない",
+    )
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
+    if args.host in ("", "0.0.0.0", "::"):
+        is_loopback = False
+    elif args.host.lower() == "localhost":
+        is_loopback = True
+    else:
+        try:
+            is_loopback = ipaddress.ip_address(args.host).is_loopback
+        except ValueError:
+            is_loopback = False
+    if not args.public_url and not is_loopback:
+        parser.error("--public-url is required when --host is not a loopback address")
+    public_url = args.public_url or f"http://{args.host}:{args.port}"
+    parsed_public_url = urllib.parse.urlsplit(public_url)
+    if (
+        parsed_public_url.scheme not in ("http", "https")
+        or not parsed_public_url.hostname
+        or parsed_public_url.username is not None
+        or parsed_public_url.password is not None
+        or parsed_public_url.path not in ("", "/")
+        or parsed_public_url.query
+        or parsed_public_url.fragment
+    ):
+        parser.error("--public-url must be an http(s) origin without a path or credentials")
+    try:
+        parsed_public_url.port
+    except ValueError:
+        parser.error("--public-url contains an invalid port")
+    public_url = public_url.rstrip("/")
 
-    server = ThreadingHTTPServer((HOST, args.port), RequestHandler)
-    url = f"http://{HOST}:{server.server_address[1]}/"
-    print(f"中継サーバーを起動しました: {url}")
-    print("終了するにはこのウィンドウで Ctrl+C を押してください。")
-    threading.Timer(0.5, webbrowser.open, args=(url,)).start()
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), RequestHandler)
+    except OSError as error:
+        parser.error(f"could not listen on {args.host}:{args.port}: {error}")
+    server.overlay_base_url = public_url
+    print(f"中継サーバーの待ち受け: {args.host}:{server.server_address[1]}")
+    print(f"クライアント向けURL: {public_url}/")
+    if not args.no_browser:
+        threading.Timer(0.5, webbrowser.open, args=(f"{public_url}/",)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
