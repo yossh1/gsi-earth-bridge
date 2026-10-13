@@ -9,6 +9,11 @@ services:
       - "${GSI_OVERLAY_BIND_ADDRESS:-0.0.0.0}:${GSI_OVERLAY_PORT:-8765}:8765"
     environment:
       GSI_OVERLAY_PUBLIC_URL: "${GSI_OVERLAY_PUBLIC_URL:?Set GSI_OVERLAY_PUBLIC_URL in .env}"
+      GSI_TILE_CACHE_DIR: /cache
+      GSI_TILE_CACHE_MAX_BYTES: "${GSI_TILE_CACHE_MAX_BYTES:-2147483648}"
+      GSI_TILE_CACHE_TTL_SECONDS: "${GSI_TILE_CACHE_TTL_SECONDS:-2592000}"
+    volumes:
+      - gsi_tile_cache:/cache
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -17,3 +22,6 @@ services:
     cap_drop:
       - ALL
     pids_limit: 64
+
+volumes:
+  gsi_tile_cache:

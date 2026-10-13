@@ -34,6 +34,8 @@ Google Earth ProはXYZタイルURLを直接扱えないため、このツール�
 
 Windows用実行ファイルは、`v`で始まるバージョンタグをGitHubにpushすると、GitHub ActionsがビルドしてReleasesにzipを公開します。
 
+Windows版もタイルをローカルディスクにキャッシュします。既定の保存先は`%LOCALAPPDATA%\gsi-earth-overlay\cache`、上限は512 MiB、有効期間は30日です。環境変数`GSI_TILE_CACHE_MAX_BYTES`（バイト）、`GSI_TILE_CACHE_TTL_SECONDS`（秒）、`GSI_TILE_CACHE_DIR`で変更できます。
+
 ## Linuxサーバーで実行する場合
 
 以下はDocker Composeで常駐起動する例です。LinuxサーバーにはDocker EngineとDocker Compose pluginがインストールされ、インターネットへ接続できる必要があります。
@@ -55,6 +57,8 @@ Windows用実行ファイルは、`v`で始まるバージョンタグをGitHub�
    `GSI_OVERLAY_PUBLIC_URL` をWindows PCから到達できるURLに変更します。LAN内の例は `http://192.168.1.20:8765`、HTTPS終端リバースプロキシを使う例は `https://maps.example.com` です。公開URLにはパスを付けず、ホスト名と必要に応じてポートだけを指定します。
 
    `GSI_OVERLAY_PORT` はLinuxホストで公開するポートです。`GSI_OVERLAY_BIND_ADDRESS` は公開ポートを待ち受けるホスト側アドレスで、デフォルトの `0.0.0.0` は全IPv4インターフェースを意味します。ローカルのHTTPSリバースプロキシだけから接続させる場合は、`GSI_OVERLAY_BIND_ADDRESS=127.0.0.1` とし、公開URLにはプロキシのHTTPS URLを設定します。
+
+   タイルキャッシュはDockerの永続ボリュームに保存されます。既定値は2 GiB、取得から30日間です。`.env`の`GSI_TILE_CACHE_MAX_BYTES`（バイト）と`GSI_TILE_CACHE_TTL_SECONDS`（秒）で上限と有効期間を変更できます。たとえば1 GiB・7日なら、それぞれ`1073741824`と`604800`を指定します。期限切れタイルは再利用時または新しいタイルの保存時に削除され、容量を超える場合は最も長く使われていないタイルから削除されます。タイルのキャッシュは再起動後も保持されます。
 
 3. コンテナをビルドして起動します。
 
@@ -86,5 +90,6 @@ VPN/LAN内での利用を推奨します。インターネットへ公開する�
 
 - Windowsでの単独起動時は `127.0.0.1` だけで待ち受けます。別ホストからアクセスさせる場合は、`--host` で待ち受けアドレス、`--public-url` でクライアントが接続するURLを指定してください。ループバック以外で待ち受ける場合、`--public-url` は必須です。
 - 地図タイルの中継先は国土地理院の標準地図に固定しています。
+- タイル画像はサーバー側にキャッシュされます。再表示は速くなりますが、初回取得には地理院への通信が必要です。
 - 地理院地図のタイル提供範囲外では地図が表示されません。利用にあたっては[地理院タイル一覧](https://maps.gsi.go.jp/development/ichiran.html)および[国土地理院の地図の利用手続](https://www.gsi.go.jp/LAW/2930-index.html)を確認してください。
 - ズーム上限を高くすると、詳細な表示が可能になる一方、Google Earth Proが取得するタイル数が増えます。

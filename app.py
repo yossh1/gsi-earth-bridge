@@ -1,22 +1,28 @@
 from __future__ import annotations
 
 import argparse
+import heapq
 import ipaddress
 import math
 import os
 import re
 import sys
+import tempfile
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.etree import ElementTree as ET
 
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+DEFAULT_TILE_CACHE_MAX_BYTES = 512 * 1024 * 1024
+DEFAULT_TILE_CACHE_TTL_SECONDS = 30 * 24 * 60 * 60
 MAX_ZOOM = 18
 MIN_ZOOM = 5
 INITIAL_VIEW_LONGITUDE = 139.7671
@@ -29,6 +35,137 @@ ET.register_namespace("", KML_NS)
 
 def tag(name: str) -> str:
     return f"{{{KML_NS}}}{name}"
+
+
+def default_cache_directory() -> str:
+    if os.name == "nt":
+        return os.path.join(
+            os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+            "gsi-earth-overlay",
+            "cache",
+        )
+    return os.path.join(os.path.expanduser("~"), ".cache", "gsi-earth-overlay")
+
+
+class TileCache:
+    def __init__(self, directory: str, max_bytes: int, ttl_seconds: int) -> None:
+        if max_bytes <= 0:
+            raise ValueError("tile cache maximum size must be positive")
+        if ttl_seconds <= 0:
+            raise ValueError("tile cache TTL must be positive")
+        self.directory = os.path.abspath(directory)
+        self.max_bytes = max_bytes
+        self.ttl_seconds = ttl_seconds
+        self.lock = threading.Lock()
+        self.entries: OrderedDict[str, tuple[float, int]] = OrderedDict()
+        self.expirations: list[tuple[float, str, float]] = []
+        self.total_bytes = 0
+        os.makedirs(self.directory, exist_ok=True)
+        self._load_index(time.time())
+
+    def tile_path(self, z: int, x: int, y: int) -> str:
+        return os.path.join(self.directory, f"{z}-{x}-{y}.png")
+
+    def get(self, z: int, x: int, y: int) -> bytes | None:
+        path = self.tile_path(z, x, y)
+        with self.lock:
+            try:
+                metadata = os.stat(path)
+            except FileNotFoundError:
+                self._remove_entry(path)
+                return None
+            now = time.time()
+            if now - metadata.st_mtime >= self.ttl_seconds:
+                os.remove(path)
+                self._remove_entry(path)
+                return None
+            with open(path, "rb") as cached_file:
+                body = cached_file.read()
+            os.utime(path, (now, metadata.st_mtime))
+            self.entries[path] = (metadata.st_mtime, metadata.st_size)
+            self.entries.move_to_end(path)
+            return body
+
+    def put(self, z: int, x: int, y: int, body: bytes) -> None:
+        if len(body) > self.max_bytes:
+            return
+        path = self.tile_path(z, x, y)
+        with self.lock:
+            handle = tempfile.NamedTemporaryFile(
+                mode="wb", dir=self.directory, suffix=".tmp", delete=False
+            )
+            temporary_path = handle.name
+            try:
+                with handle:
+                    handle.write(body)
+                now = time.time()
+                os.utime(temporary_path, (now, now))
+                os.replace(temporary_path, path)
+                self._remove_entry(path)
+                self.entries[path] = (now, len(body))
+                self.total_bytes += len(body)
+                heapq.heappush(
+                    self.expirations, (now + self.ttl_seconds, path, now)
+                )
+                self._prune_locked(now)
+            finally:
+                if os.path.exists(temporary_path):
+                    os.remove(temporary_path)
+
+    def prune(self) -> None:
+        with self.lock:
+            self._prune_locked(time.time())
+
+    def _load_index(self, now: float) -> None:
+        with self.lock:
+            files = []
+            for name in os.listdir(self.directory):
+                if not name.endswith(".png"):
+                    continue
+                path = os.path.join(self.directory, name)
+                try:
+                    metadata = os.stat(path)
+                except FileNotFoundError:
+                    continue
+                if now - metadata.st_mtime >= self.ttl_seconds:
+                    os.remove(path)
+                    continue
+                files.append((metadata.st_atime, path, metadata.st_mtime, metadata.st_size))
+            for atime, path, mtime, size in sorted(files):
+                self.entries[path] = (mtime, size)
+                self.total_bytes += size
+                heapq.heappush(
+                    self.expirations, (mtime + self.ttl_seconds, path, mtime)
+                )
+                try:
+                    os.utime(path, (atime, mtime))
+                except FileNotFoundError:
+                    self._remove_entry(path)
+            self._prune_locked(now)
+
+    def _remove_entry(self, path: str) -> None:
+        entry = self.entries.pop(path, None)
+        if entry is not None:
+            self.total_bytes -= entry[1]
+
+    def _prune_locked(self, now: float) -> None:
+        while self.expirations and self.expirations[0][0] <= now:
+            _, path, mtime = heapq.heappop(self.expirations)
+            entry = self.entries.get(path)
+            if entry is None or entry[0] != mtime:
+                continue
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            self._remove_entry(path)
+        while self.total_bytes > self.max_bytes and self.entries:
+            path, (_, size) = self.entries.popitem(last=False)
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+            self.total_bytes -= size
 
 
 def tile_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
@@ -274,6 +411,17 @@ class RequestHandler(BaseHTTPRequestHandler):
         return 0 <= z <= MAX_ZOOM and 0 <= x < (1 << z) and 0 <= y < (1 << z)
 
     def proxy_tile(self, z: int, x: int, y: int) -> None:
+        cache = self.server.tile_cache
+        try:
+            body = cache.get(z, x, y)
+        except OSError as error:
+            self.log_error("tile cache read failed: %s", error)
+            self.send_error(500, "tile cache read failed")
+            return
+        if body is not None:
+            self.send_tile(body)
+            return
+
         url = f"{TILE_HOST}/xyz/std/{z}/{x}/{y}.png"
         request = urllib.request.Request(
             url,
@@ -292,13 +440,25 @@ class RequestHandler(BaseHTTPRequestHandler):
         if content_type != "image/png":
             self.send_error(502, f"unexpected GSI tile content type: {content_type}")
             return
+        try:
+            cache.put(z, x, y, body)
+        except OSError as error:
+            self.log_error("tile cache write failed: %s", error)
+            self.send_error(500, "tile cache write failed")
+            return
+        self.send_tile(body)
+
+    def send_tile(self, body: bytes) -> None:
         self.send_response(200)
-        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Type", "image/png")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "public, max-age=86400")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            self.close_connection = True
 
     def log_message(self, format: str, *args: object) -> None:
         super().log_message(format, *args)
@@ -330,9 +490,38 @@ def main() -> None:
         action="store_true",
         help="起動時にブラウザーを開かない",
     )
+    parser.add_argument(
+        "--cache-dir",
+        default=os.environ.get("GSI_TILE_CACHE_DIR", default_cache_directory()),
+        help="タイルキャッシュ保存先（環境変数: GSI_TILE_CACHE_DIR）",
+    )
+    parser.add_argument(
+        "--cache-max-bytes",
+        type=int,
+        default=int(
+            os.environ.get(
+                "GSI_TILE_CACHE_MAX_BYTES", str(DEFAULT_TILE_CACHE_MAX_BYTES)
+            )
+        ),
+        help="タイルキャッシュ最大容量（バイト、環境変数: GSI_TILE_CACHE_MAX_BYTES）",
+    )
+    parser.add_argument(
+        "--cache-ttl-seconds",
+        type=int,
+        default=int(
+            os.environ.get(
+                "GSI_TILE_CACHE_TTL_SECONDS", str(DEFAULT_TILE_CACHE_TTL_SECONDS)
+            )
+        ),
+        help="タイルキャッシュ有効期間（秒、環境変数: GSI_TILE_CACHE_TTL_SECONDS）",
+    )
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
+    if args.cache_max_bytes <= 0:
+        parser.error("--cache-max-bytes must be positive")
+    if args.cache_ttl_seconds <= 0:
+        parser.error("--cache-ttl-seconds must be positive")
     if args.host in ("", "0.0.0.0", "::"):
         is_loopback = False
     elif args.host.lower() == "localhost":
@@ -367,6 +556,13 @@ def main() -> None:
     except OSError as error:
         parser.error(f"could not listen on {args.host}:{args.port}: {error}")
     server.overlay_base_url = public_url
+    try:
+        server.tile_cache = TileCache(
+            args.cache_dir, args.cache_max_bytes, args.cache_ttl_seconds
+        )
+    except OSError as error:
+        server.server_close()
+        parser.error(f"could not initialize tile cache: {error}")
     print(f"中継サーバーの待ち受け: {args.host}:{server.server_address[1]}")
     print(f"クライアント向けURL: {public_url}/")
     if not args.no_browser:

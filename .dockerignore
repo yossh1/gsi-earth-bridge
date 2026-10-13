@@ -2,6 +2,8 @@
 .gitignore
 .dockerignore
 .env
+cache
+data
 __pycache__
 *.py[cod]
 .venv

@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY --chown=10001:10001 app.py /app/app.py
+RUN mkdir /cache && chown 10001:10001 /cache
 
 USER 10001:10001
 EXPOSE 8765
