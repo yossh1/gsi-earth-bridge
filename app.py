@@ -5,6 +5,7 @@ import ipaddress
 import math
 import os
 import re
+import sys
 import threading
 import urllib.error
 import urllib.parse
@@ -293,6 +294,9 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="地理院地図をGoogle Earth Proへ中継")
     parser.add_argument(
         "--host",
