@@ -1,0 +1,19 @@
+services:
+  gsi-earth-overlay:
+    build: .
+    image: gsi-earth-overlay:latest
+    container_name: gsi-earth-overlay
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${GSI_OVERLAY_BIND_ADDRESS:-0.0.0.0}:${GSI_OVERLAY_PORT:-8765}:8765"
+    environment:
+      GSI_OVERLAY_PUBLIC_URL: "${GSI_OVERLAY_PUBLIC_URL:?Set GSI_OVERLAY_PUBLIC_URL in .env}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64

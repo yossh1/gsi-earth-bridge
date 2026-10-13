@@ -1,0 +1,11 @@
+.git
+.gitignore
+.dockerignore
+.env
+__pycache__
+*.py[cod]
+.venv
+venv
+README.md
+start.bat
+deploy
